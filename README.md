@@ -1,234 +1,312 @@
 # Slotbook
 
-**A full-stack TypeScript appointment scheduler with PostgreSQL-enforced booking correctness.** Hosts publish schedules; guests book one-to-one appointments or capacity-limited group sessions. Competing requests cannot commit overlapping host sessions or take the same seat twice.
+A full-stack appointment-booking application built with **TypeScript, React, Fastify, and PostgreSQL**. Hosts define their availability; guests reserve one-on-one appointments or seats in group sessions. PostgreSQL transactions and constraints protect bookings when multiple requests arrive at the same time.
 
-> **Verification:** A prior iteration built and started successfully on the user's Windows PostgreSQL 18 machine, but this revised version includes new changes and requires fresh Windows build/integration/HTTP concurrency acceptance. In this authoring environment, 3 HTTP-contract tests and 4 IANA/DST assertions passed; the full PostgreSQL suite could not run because npm registry packages and a PostgreSQL server were unavailable. The earlier Python 28/28 + 1/49 result belongs to a separate implementation and must never be presented as this TypeScript result. See `docs/VALIDATION_STATUS.md`.
+## 1. Setup and run
 
-## Release 2 - coordinated booking-product improvements
+Choose **Docker** for an isolated, one-command setup or **Manual setup** to use an existing local PostgreSQL installation. Run the commands from the repository root.
 
-- **Reliable sign-in/out:** HttpOnly, SameSite cookies; database-backed 12-hour sessions; origin checks on host mutations; explicit logout; IP-scoped demo login throttling. No misleading JSON content type on empty logout requests.
-- **Guest experience:** dynamic host directory and event pages, responsive navigation, hold countdown, cancel/change-slot, retry-safe pending hold and confirmation, private manage-link recovery in the same browser tab, clear error/empty states.
-- **Host workspace:** working-hour windows, date overrides (save/remove), bookings in host zone, cancellation reason dialog, event edit/deactivation, notification details, metrics, time-zone change acknowledgement.
-- **Database safety:** forward-only `002_booking_integrity.sql` adds host/event composite FK and immutable session scheduling/capacity, on top of GiST overlap exclusions, unique active seats, capacity triggers and serialized booking writes.
-- **Correct time:** UTC storage, host local generation, guest time-zone display, IANA DST gap/fold rejection, PostgreSQL-clock hold expiry. Slot availability reads do not unnecessarily hold write locks; expired holds are excluded from capacity counts.
-- **Abuse/observability:** single-instance IP throttle for login/holds (not a distributed rate limit), redacted structured route logs, authenticated metrics endpoint. Private tokens never appear in logged raw URLs.
+### Option A — Docker Compose
 
-Existing confirmed appointments and database data are preserved by migration. Public host signup, password reset, payment delivery and real email sending remain outside the written core brief.
-
-## Run locally on Windows without Docker
-
-Use PostgreSQL 15+ (the existing PostgreSQL 18 installation is supported), Node.js 22+,
-**and a separate database from the earlier Python Slotbook**.
-
-1. Create the databases once as a PostgreSQL administrator:
-   `CREATE DATABASE slotbook_ts OWNER slotbook;` and
-   `CREATE DATABASE slotbook_ts_test OWNER slotbook;`.
-2. `Copy-Item .env.example .env`, then edit **only your local** `.env` to use the
-   actual `slotbook` role password. The default URLs target `127.0.0.1:5432`,
-   databases `slotbook_ts` and `slotbook_ts_test`.
-   The `EXPECTED_DATABASE_NAME=slotbook_ts` setting refuses an accidental
-   connection to the legacy Python `slotbook` database.
-3. `npm install`, `npm run build`, `node --env-file=.env dist/server/src/index.js`.
-4. Open `http://localhost:3000/demo-ny/interview` and `/host`.
-5. Tests: `npm run test:local` (runs both integration and HTTP-contract suites; needs `slotbook_ts_test`).
-   The test runner refuses databases without a `_test` suffix and resets the dedicated test database only.
-6. Live 50-request demonstration, with the app running:
-   `node --env-file=.env dist/scripts/concurrency.js --attempts 50`.
-
-**Do not publish `.env` or your actual DB password.** If your password includes reserved URL
-characters, URL-encode it. Docker Compose supplies its own database URL and is optional.
-
-## 60-second product tour
-
-1. Open **http://localhost:3000** and choose **Browse hosts**. Open the seeded host's **Interview (30m)** or **Group Workshop (60m, capacity 4)**.
-2. Pick a date in the host's calendar and select a guest IANA display zone. Use **Hold** (5-minute reservation). Release the hold if you want a different time; a safe retry uses the same idempotency key.
-3. Enter a name and email; confirm. Save the private manage link for rescheduling/cancellation.
-4. Visit **http://localhost:3000/host** and sign in with the seeded local demo credentials below.
-5. Create/edit/deactivate an event, manage weekly hours and date overrides, see host-local upcoming bookings and counters, cancel with a reason and inspect the notification outbox. Test sign out and sign in again.
-
-### Quick start: one command
-
-Install Docker Desktop, then from this repository:
+**Prerequisites:** Docker Desktop (or Docker Engine with Compose) and free local ports `3000` (app) and `5433` (database forwarding).
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
-- App: **http://localhost:3000**
-- Host dashboard: **http://localhost:3000/host**
-- Public interview: **http://localhost:3000/demo-ny/interview**
-- Group workshop: **http://localhost:3000/demo-ny/workshop**
-- Postgres: `localhost:5433` (avoids an existing Windows Postgres on port 5432)
-- Demo email: `demo@slotbook.local`
-- Demo password: `DemoPass!2026` (local evaluation only; change before public deployment)
+The application starts automatically, applies the SQL migrations, and seeds a demo host and two event types. PostgreSQL data is persisted in a Docker volume.
 
-Startup runs migrations and idempotent demo seeding automatically. Two event types are seeded. Compose persists PostgreSQL data in a named volume. **Do not use these demo credentials in public production.**
+| Page | URL |
+| --- | --- |
+| Home | http://localhost:3000 |
+| Host dashboard | http://localhost:3000/host |
+| Interview booking | http://localhost:3000/demo-ny/interview |
+| Group workshop | http://localhost:3000/demo-ny/workshop |
+| API health | http://localhost:3000/api/health/ready |
 
-### Run all real PostgreSQL tests
+**Demo host credentials (local evaluation only)**
+
+```text
+Email:    demo@slotbook.local
+Password: DemoPass!2026
+```
+
+**Run the PostgreSQL integration tests in the separate Docker test database:**
 
 ```bash
 docker compose --profile test run --build --rm test
 ```
 
-The integration suite uses the isolated `slotbook_test` database; it deliberately refuses to run without a database name ending in `_test`. This suite resets **only** the test database's host/booking data. It tests one-on-one contention, group capacity, direct SQL exclusion, expiry, retries, reschedule rollback, DST and notification events.
-
-Run the live HTTP contention proof *after* the app is up:
+**Run the live 50-request contention check** while the application is running:
 
 ```bash
 docker compose exec app npm run test:concurrency -- --attempts 50
 ```
 
-Expected invariant: one 201, 49 HTTP 409 responses, one active booking persisted. The script fails nonzero if this invariant is not met and writes `docs/evidence/concurrency_result.json` **inside the container**. Export it with `docker cp` if needed. Do not state a measured result until you run the test.
+Stop the services without removing the database volume:
 
-## Product and data flow
-
-```mermaid
-flowchart LR
-    H[Authenticated host] -->|Event types, hours, overrides| API[Fastify TypeScript API]
-    G[Public guest] -->|View, hold, confirm, manage| API
-    API --> TX[PostgreSQL transactions]
-    TX --> SC[Booking sessions: GiST overlap exclusion]
-    TX --> SE[Seat assignments: unique active booking per seat]
-    TX --> OUT[Transactional notification outbox]
-    API --> UI[React TypeScript client]
+```bash
+docker compose down
 ```
 
-### Booking lifecycle
+> Docker uses PostgreSQL inside its own network and forwards its database port to `127.0.0.1:5433`. It does **not** use your manually installed Windows PostgreSQL on port `5432`. Docker support is configured in the repository; the documented Docker commands have not been separately executed as part of the reported Windows validation.
 
-```mermaid
-flowchart TD
-    A[Host defines local availability] --> B[Guest selects a UTC instant]
-    B --> C[Host row locked in Postgres]
-    C --> D{Compatible active session exists?}
-    D -->|Yes, capacity remains| E[Allocate unoccupied seat]
-    D -->|No| F[Create protected session + seats]
-    F --> E
-    D -->|Overlapping different session| X[409 conflict]
-    E --> H[HELD for 5 minutes]
-    H -->|Before DB-clock expiry| I[CONFIRMED]
-    H -->|Expired| J[EXPIRED / slot released]
-    I -->|Reschedule, atomic| K[Move seat and release old session if empty]
-    I -->|Cancel| L[CANCELLED]
-```
+### Option B — Manual setup (Windows, without Docker)
 
-### Four guests want one interview slot
+**Prerequisites:** Node.js **22+**, npm, and PostgreSQL **15+**. On Windows, PostgreSQL 18 and Node.js 24 are also supported by the local setup used for validation.
 
-```mermaid
-flowchart TD
-  A[Guest A] --> P[(PostgreSQL)]
-  B[Guest B] --> P
-  C[Guest C] --> P
-  D[Guest D] --> P
-  P --> W[One successful active hold]
-  P --> N[Other overlapping requests: HTTP 409]
-```
-
-**Winner selection:** first *successfully committed* conflicting transaction wins, **not** necessarily first browser click. All write paths lock the host row, while a native exclusion constraint prevents simultaneous active sessions from overlapping. The winning guest receives a five-minute hold. Others can select another slot.
-
-**Group sessions:** a session has `capacity` numbered seats. Same event, same start time can share its active session, but each seat has one active booking at most. Other session times/event types cannot overlap that host's occupied range, including buffers. Capacity is defended by seat foreign keys, a seat-limit trigger and a partial unique index.
-
-## Database schema at a glance
-
-| Table | Purpose / key invariants |
-|---|---|
-| `hosts` | Identity, email, salted `scrypt` password hash, IANA home time zone |
-| `event_types` | Host, slug, 15–120-minute duration, capacity, 0–30-minute buffers, notice, horizon |
-| `weekly_availability` | Multiple non-overlapping windows per weekday |
-| `date_overrides` | Day off or custom local-time windows |
-| `booking_sessions` | UTC start/end, captured event settings, occupied `TSTZRANGE`; **GiST exclusion per host when active** |
-| `session_seats` | Numbered seats, upper-bounded by DB trigger |
-| `bookings` | Status, hold expiry, private token hash, seat reference, optimistic version; **unique active seat** |
-| `idempotency_records` | Request fingerprint and original response in same transaction as state change |
-| `auth_sessions` | Expiring hashed host login token |
-| `notification_outbox` | Confirm/reschedule/cancel events committed atomically |
-
-**Critical native constraints** (see [`server/sql/001_initial.sql`](server/sql/001_initial.sql)):
+**1. Prepare two separate databases.** Use an existing PostgreSQL login role named `slotbook`, or create it first as a database administrator. In `psql`, run the following statements **only if these databases do not already exist**:
 
 ```sql
-CONSTRAINT no_host_session_overlap EXCLUDE USING gist (
-  host_id WITH =, occupied_range WITH &&
-) WHERE (state='active');
-
-CREATE UNIQUE INDEX one_active_booking_per_seat
-  ON bookings(session_id,seat_no)
-  WHERE status IN ('held','confirmed');
+CREATE DATABASE slotbook_ts OWNER slotbook;
+CREATE DATABASE slotbook_ts_test OWNER slotbook;
 ```
 
-Times use `[start, end)` boundaries; adjacent bookings are allowed unless buffers overlap. Active `held` and `confirmed` bookings count against session capacity. `expired` and `cancelled` do not.
+The database role must be able to create the required extensions (`pgcrypto`, `btree_gist`) when migrations first run. **Do not reuse an unrelated existing database.** The Docker and manual setups intentionally use different database names.
 
-## Network, clock and transaction reliability
+**2. Create a private environment file.** In PowerShell:
 
-- **Hold:** host row lock -> expire stale holds by `clock_timestamp()` -> validate host-local schedule and current capacity -> allocate seat/insert hold -> commit idempotency record and response.
-- **Confirm:** secret token required; host lock; expiry checked using the DB clock; update and notification event in the same transaction.
-- **Reschedule:** private manage token and `expected_version` required. Release the old session if this was its last member, acquire new session/seat, update the *same* booking, emit notification. On constraint/availability failure the transaction rolls back, retaining the original appointment.
-- **Cancel:** host dashboard requires a reason; private guest manage link can cancel. Release session when empty and emit event.
-- **Network response lost:** retry same `Idempotency-Key` and same payload to retrieve the committed response. Reusing the key with a different request yields HTTP 409.
-- **Expired hold:** 60-second worker cleans abandoned holds; every booking write path also expires stale holds while holding a host-row lock. If worker stops, correctness remains; cleanup can be delayed until next booking request.
-- **Timezone:** slots originate in the host's IANA zone; conversion to UTC is strict for DST folds/gaps; guest sees the same instant rendered in their zone. For example, New York Dec 1 09:00 = 14:00 UTC = Bengaluru 19:30.
-
-## Documented API
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/hosts/:host/events/:event/slots?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Asia/Kolkata` | Available slots and seats |
-| POST | `/api/holds` | `{event_id,start_at}`; `Idempotency-Key` |
-| POST | `/api/holds/:id/confirm` | `{guest_name,guest_email}`; `X-Booking-Token`, `Idempotency-Key` |
-| GET | `/api/bookings/:token` | Private manage-booking view |
-| POST | `/api/bookings/:token/reschedule` | `{start_at,expected_version}`; `Idempotency-Key` |
-| POST | `/api/bookings/:token/cancel` | `{reason}`; `Idempotency-Key` |
-| POST | `/api/auth/login` | Host sign-in (HTTP-only cookie) |
-| GET/POST | `/api/host/events` | Read / create host event types |
-| GET/PUT | `/api/host/schedule` | Weekly hours (multiple windows) |
-| PUT | `/api/host/overrides/:day` | Date closure/custom windows |
-| GET | `/api/host/bookings` | Upcoming host bookings |
-| POST | `/api/host/bookings/:id/cancel` | Host cancellation with reason |
-| GET | `/api/notifications` | Authenticated notification sink |
-| GET | `/api/health`, `/api/health/ready` | Health and DB readiness |
-
-**API example:**
-
-```bash
-curl -X POST http://localhost:3000/api/holds \
-  -H 'Content-Type: application/json' -H 'Idempotency-Key: request-12345678' \
-  -d '{"event_id":"EVENT_UUID_FROM_SLOTS_API","start_at":"2026-12-01T14:00:00.000Z"}'
+```powershell
+Copy-Item .env.example .env
+notepad .env
 ```
 
-## Development without Docker
+Set the existing PostgreSQL username/password and keep the target database names distinct:
 
-Requires Node 22+, npm, PostgreSQL 15+, two databases `slotbook` and `slotbook_test`, and a Postgres user with create-extension permission for `btree_gist` and `pgcrypto`. Copy `.env.example` to `.env` and update the URLs. On Node 22, environment files can be read via `node --env-file=.env`. Then:
+```dotenv
+DATABASE_URL=postgresql://slotbook:YOUR_PASSWORD@127.0.0.1:5432/slotbook_ts
+TEST_DATABASE_URL=postgresql://slotbook:YOUR_PASSWORD@127.0.0.1:5432/slotbook_ts_test
+EXPECTED_DATABASE_NAME=slotbook_ts
+PORT=3000
+COOKIE_SECURE=false
+DEMO_EMAIL=demo@slotbook.local
+DEMO_PASSWORD=DemoPass!2026
+```
 
-```bash
+Replace `YOUR_PASSWORD` locally. URL-encode reserved password characters such as `@`, `#`, `%`, `/` and `:`. Never commit `.env` or share credentials in logs/screenshots.
+
+**3. Install dependencies, build, and start:**
+
+```powershell
 npm install
 npm run build
+npm run start:local
+```
+
+If `start:local` is not available in your local `package.json`, use the equivalent command:
+
+```powershell
 node --env-file=.env dist/server/src/index.js
 ```
 
-For React live development, run `npm run dev:web` in a second terminal; Vite serves `http://localhost:5173` and proxies `/api` to port 3000.
+Open the URLs in the table above. Migrations and demo seeding happen at startup without resetting existing bookings.
 
-To execute tests manually, set `DATABASE_URL` and `TEST_DATABASE_URL` to the **test** DB before `npm test`; do not set them to your production or development booking database. Do not run the test suite on the existing Python Slotbook database.
+**4. Run the full local build and PostgreSQL tests** in a separate PowerShell terminal:
 
-## Repository map
-
-```text
-server/sql/001_initial.sql   Database schema and native invariants
-server/src/time.ts          Strict IANA timezone/DST conversion
-server/src/slots.ts         Host-local availability generation
-server/src/service.ts       Transactions, capacity, idempotency, expiry
-server/src/auth.ts          Host auth and private guest tokens
-server/src/app.ts           Fastify JSON API + React static serving
-web/src/                   React host dashboard and guest pages
-tests/integration.test.ts   Real PostgreSQL end-to-end and concurrency tests
-scripts/concurrency.ts      HTTP contention test and DB row verification
-AI_LOG.md                   AI usage, review, corrections and gaps
-docs/                      Report, design and validation notes
+```powershell
+npm run verify:local
 ```
 
-## Optional extensions and known gaps
+This validates the main/test database targets, compiles the backend, typechecks and builds React, and executes the automated tests against `slotbook_ts_test`. The test suite **resets data in the dedicated test database**, not `slotbook_ts`.
 
-**Additional optional capabilities:** single-process login/hold abuse throttling, host metrics, redacted route logging and CI automation. Group sessions, the transactional notification sink, the expiry worker, seeded host login and cancellation reason are part of the written core or its implementation; concurrency testing is essential evidence, not an optional feature.
+If you want just the database/API tests:
 
-**Not implemented:** external email/reminder delivery, calendar sync/ICS, payments, team round-robin, waitlists, public deployment, advanced anti-bot protection or Playwright browser automation. Notifications are persisted, not sent. No throughput/p95 benchmark is claimed.
+```powershell
+npm run test:local
+```
 
-**Validation:** The coordinated release passed 3 standalone HTTP-contract tests, 4 IANA/DST checks and syntax parsing of all TS/TSX source files; the authoring environment could not install npm packages or start PostgreSQL. The user's earlier Windows build and startup applied to the previous source revision. This release's full build and database tests are **not yet verified**. Run the commands above, fix any failing checks and attach their real output before claiming a pass. See [`docs/VALIDATION_STATUS.md`](docs/VALIDATION_STATUS.md).
+**Development mode:** Start the backend on port `3000` and run `npm run dev:web` in another terminal. Vite serves the React client on `http://localhost:5173` and proxies `/api` to the backend.
 
-**AI and provenance:** See [`AI_LOG.md`](AI_LOG.md). Do not squash Git history after publishing. A future public URL is to be added to the report before submission.
+### Automated real-browser testing (Windows)
+
+Browser end-to-end tests use **Playwright + Chromium** and run an isolated server on port **3101**, connected to `slotbook_ts_test`. They do not use or reset your primary `slotbook_ts` database.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-e2e.ps1
+```
+
+The launcher checks the environment, installs the browser test dependency if needed, builds the project, starts the isolated test server, and runs guest/host browser scenarios. The first run needs internet access to install Chromium.
+
+To view the generated local results:
+
+```powershell
+npx playwright show-report
+```
+
+Do not publish `playwright-report/` or `test-results/`: traces/screenshots can include private test booking links. Do not run browser E2E and PostgreSQL integration tests simultaneously against the same test database.
+
+---
+
+## 2. What is Slotbook?
+
+Slotbook provides three surfaces:
+
+- **Host dashboard:** sign in, configure an IANA home time zone, create and manage event types, define weekly availability and special-date overrides, review bookings, cancel with a reason, and inspect notification events.
+- **Public guest booking:** browse hosts/events, choose a date and display time zone, place a five-minute hold, confirm a booking, and use a private link to reschedule or cancel. Guest login is not required.
+- **JSON API:** TypeScript/Fastify endpoints backed by PostgreSQL transactions, idempotency records, capacity/overlap constraints, and a durable notification outbox.
+
+The seeded host publishes an **Interview** event (30 minutes, one seat) and a **Group Workshop** (60 minutes, four seats). Public event routes follow `/{host}/{event-slug}`.
+
+### 60-second walkthrough
+
+1. Visit `/` and **Browse hosts**; choose the demo host and the **Interview** or **Group Workshop** event.
+2. Select a date, switch the displayed time zone if needed, and select an available slot.
+3. **Hold** the slot for five minutes; enter a name and email and **Confirm**. The app shows a private management link.
+4. Open the private link to **reschedule** or **cancel** the appointment.
+5. Visit `/host`, sign in with the demo account, and review **bookings, event types, availability, date overrides, notifications and metrics**.
+
+## 3. Features
+
+| Area | Functionality |
+| --- | --- |
+| Host authentication | Seeded email/password, hashed passwords, database-backed sessions, HttpOnly cookies and logout |
+| Event types | Slug, 15–120-minute duration, capacity, 0–30-minute buffers, minimum notice and booking horizon |
+| Availability | Multiple weekly windows per day; host-local closures and custom hours on individual dates |
+| Guest booking | Date/time-zone selection, five-minute holds, confirmation and private booking management |
+| Booking management | Guest cancellation/rescheduling; host cancellations with reasons |
+| Group sessions | Multiple seats within one time slot, without overbooking |
+| Notifications | Transactional database outbox for confirm, reschedule and cancel (not real email delivery) |
+| Reliability | Idempotency keys, hold expiry, conflict responses, atomic rescheduling, database constraints |
+| Operational visibility | Health endpoints, structured request metadata and host metrics |
+
+## 4. Architecture and booking flow
+
+```mermaid
+flowchart LR
+    G[Guest browser] --> R[React / TypeScript UI]
+    H[Authenticated host] --> R
+    R --> A[Fastify / TypeScript API]
+    A --> T[PostgreSQL transactions]
+    T --> B[(Bookings and sessions)]
+    T --> I[(Idempotency records)]
+    T --> N[(Notification outbox)]
+    B --> C[GiST exclusion + unique active seats]
+```
+
+**Booking flow**
+
+```mermaid
+flowchart TD
+    A[Host configures event and availability] --> B[Guest requests available slots]
+    B --> C[Guest selects a UTC instant]
+    C --> D[PostgreSQL transaction and host lock]
+    D --> E{Slot and seat available?}
+    E -->|No| X[HTTP 409 conflict]
+    E -->|Yes| F[Five-minute HELD booking]
+    F -->|Confirm in time| G[CONFIRMED]
+    F -->|Deadline passes| H[EXPIRED / seat reusable]
+    G -->|Reschedule atomically| G
+    G -->|Cancel| I[CANCELLED / seat reusable]
+```
+
+**How double-booking is prevented:** the API serializes competing writes for the same host, and PostgreSQL enforces the final invariants. A GiST exclusion constraint prevents overlapping active host sessions (including buffers); group events use numbered seats with a uniqueness constraint preventing two active bookings for the same seat. The transaction that commits successfully wins—request arrival order is not guaranteed.
+
+**How time zones work:** hosts define availability in their IANA time zone; available slots are converted to UTC instants for storage and conflict checking. Guests see times in their selected display zone. Ambiguous/nonexistent local daylight-saving times are rejected rather than silently shifted.
+
+**How failure recovery works:** an idempotency key identifies an operation for safe replay; failed reschedules roll back; a five-minute hold expires according to the database clock; cancellations release capacity. Notifications are written in the same transaction as the corresponding booking change.
+
+## 5. Data model
+
+| Table | Responsibility |
+| --- | --- |
+| `hosts`, `auth_sessions` | Host identity, timezone and authenticated sessions |
+| `event_types` | Host-owned scheduling policies and seat capacity |
+| `weekly_availability`, `date_overrides` | Recurring hours and special-day rules |
+| `booking_sessions` | UTC start/end, buffers and occupied PostgreSQL time ranges |
+| `session_seats` | Numbered capacity for a single session |
+| `bookings` | Held/confirmed/expired/cancelled booking status and private token hashes |
+| `idempotency_records` | Safe repeated-request detection and stored results |
+| `notification_outbox` | Persisted booking lifecycle notifications |
+| `schema_migrations` | Applied SQL migration tracking |
+
+SQL migrations are stored in `server/sql/`. The app applies them on startup; **no manual schema import is required**.
+
+## 6. HTTP API
+
+The frontend and external clients use the same JSON API. Selected endpoints:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/public/hosts` | Discover public hosts |
+| `GET` | `/api/public/hosts/:host` | Discover a host's active event types |
+| `GET` | `/api/hosts/:host/events/:event/slots?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Asia%2FKolkata` | Retrieve available slots |
+| `POST` | `/api/holds` | Reserve a slot temporarily |
+| `POST` | `/api/holds/:id/confirm` | Confirm a held appointment |
+| `GET` | `/api/bookings/:token` | Read a booking with its private token |
+| `POST` | `/api/bookings/:token/reschedule` | Move a confirmed booking |
+| `POST` | `/api/bookings/:token/cancel` | Cancel a guest booking |
+| `POST` | `/api/auth/login` / `/api/auth/logout` | Host sign-in / sign-out |
+| `GET` | `/api/host/me` | Authenticated host profile |
+| `GET`, `POST` | `/api/host/events` | Event listing and creation |
+| `PATCH` | `/api/host/events/:id` | Update or deactivate an event |
+| `GET`, `PUT` | `/api/host/schedule` | Weekly availability |
+| `PUT`, `DELETE` | `/api/host/overrides/:day` | Date overrides |
+| `GET` | `/api/host/bookings` | Upcoming host bookings |
+| `POST` | `/api/host/bookings/:id/cancel` | Host cancellation with reason |
+| `GET` | `/api/notifications` | Notification outbox (host only) |
+| `GET` | `/api/host/metrics` | Host statistics |
+| `GET` | `/api/health`, `/api/health/ready` | Service / database readiness |
+
+Write requests for holds, confirmations, reschedules and cancellations use an `Idempotency-Key` header. Confirming a hold also requires the private `X-Booking-Token` header. Host routes require the authenticated session cookie.
+
+Example (replace the event ID and start time with values from the slots API):
+
+```bash
+curl -X POST http://localhost:3000/api/holds \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: sample-request-12345678' \
+  -d '{"event_id":"EVENT_UUID_FROM_SLOTS_API","start_at":"2026-12-01T14:00:00.000Z"}'
+```
+
+## 7. Automated testing and evidence
+
+The latest supplied **Windows local execution results** were:
+
+| Check | Observed result |
+| --- | --- |
+| Environment URL validation | Passed; separate main/test databases |
+| Backend TypeScript compile | Passed |
+| React typecheck and Vite production build | Passed |
+| PostgreSQL + HTTP automated tests | **23 / 23 passed** |
+| Playwright Chromium browser UAT | **4 / 4 passed** |
+| One-on-one contention | **50 simultaneous holds: 1 success (201), 49 conflicts (409)** |
+| Group capacity | Four seats accepted; fifth conflicting hold rejected |
+
+The PostgreSQL tests also cover expired holds, private booking tokens, logout, dynamic public discovery, host event changes, date overrides, transactional notifications, DST checks and rollback during failed rescheduling. Browser tests cover authentication/navigation, hold release, guest confirmation/rescheduling/cancellation and group capacity. These results describe the verified Windows runs, **not** a Docker or public-deployment test.
+
+Reproduce with `npm run verify:local` and `powershell -ExecutionPolicy Bypass -File .\run-e2e.ps1` after configuring the separate test database. Browser reports are generated locally and intentionally not committed.
+
+## 8. Optional extensions implemented
+
+The written assignment treats these as optional after the booking core:
+
+- **End-to-end testing and CI:** Playwright browser tests and a GitHub Actions workflow for Node/PostgreSQL build and integration tests. Browser tests passed locally; the remote CI workflow should be checked after the first GitHub push.
+- **Observability:** structured HTTP request metadata, health/readiness checks, and authenticated host metrics.
+- **Basic abuse protection:** in-process rate limits for login and booking operations. These are suitable for a single demo instance, not a distributed production defense.
+
+Also provided: a separate HTTP contention script in `scripts/concurrency.ts`. The booking engine itself, guest management, group capacity and database notification sink belong to the core implementation.
+
+## 9. Repository layout
+
+```text
+.github/workflows/test.yml       GitHub Actions build + PostgreSQL tests
+server/sql/                     Database migrations and Docker test-db initializer
+server/src/                     Fastify API, auth, booking engine, time and seed logic
+web/src/                        React pages, HTTP client and styling
+tests/                          HTTP contract, PostgreSQL and timezone tests
+tests/e2e/                      Playwright browser tests
+scripts/                        Environment checks, HTTP contention and E2E launcher
+Dockerfile, compose.yaml         Container-based setup
+run-e2e.ps1, playwright.config.mjs   Windows browser-test entry points
+package.json                    Dependencies and npm scripts
+README.md                       Setup, product, API and architecture
+AI_LOG.md                       AI usage, mistakes, corrections and verification
+```
+
+## 10. Scope, limitations and submission
+
+The core brief does **not** require calendar-provider synchronization, payments, real email delivery or multi-host round-robin. Accordingly, notifications are persisted to the database rather than delivered to guest inboxes. The public demo account and local HTTP cookie settings are **not production deployment credentials/settings**. In-memory throttling would need a distributed rate limiter for multiple server instances.
+
+The repository contains the source, migrations, seeded demo, tests, setup documentation, optional-extension list and [`AI_LOG.md`](AI_LOG.md). A **separate 6–12-page report** accompanies the public GitHub repository submission, covering architecture, data model, key decisions, failure cases, time zones, tests, AI usage and known gaps. Add the actual repository URL to that report after publishing.
+
+Keep full Git commit history (do not squash). Never publish `.env`, passwords, private booking-management URLs, Playwright traces or local test data.

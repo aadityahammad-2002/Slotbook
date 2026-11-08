@@ -1,19 +1,33 @@
+# Dependencies and generated builds
 node_modules/
 dist/
 web/dist/
-.env
 coverage/
-.DS_Store
-*.log
-node_modules/
-dist/
-web/dist/
+*.tsbuildinfo
+
+# Local configuration and secrets
 .env
 .env.*
 !.env.example
-coverage/
+
+# Browser test output (can contain private booking tokens)
 playwright-report/
 test-results/
+
+# Local logs, temporary files and archives
 *.log
 *.zip
+*.bak
+*.backup
 package.json.backup
+.DS_Store
+Thumbs.db
+
+# Historical authoring notes and stale evidence, not submission material
+LOCAL_FIX_NOTES.md
+START_HERE.md
+docs/RELEASE*_AUDIT.md
+docs/VALIDATION_STATUS.md
+docs/REQUIREMENT_MATRIX.md
+docs/evidence/
+Slotbook_Assignment_Report.pdf

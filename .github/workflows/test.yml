@@ -1,5 +1,7 @@
 name: PostgreSQL reliability tests
+
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -9,20 +11,29 @@ jobs:
         env:
           POSTGRES_USER: slotbook
           POSTGRES_PASSWORD: slotbook_ci
-          POSTGRES_DB: slotbook_test
-        ports: ['5432:5432']
+          POSTGRES_DB: slotbook
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U slotbook -d slotbook_test"
+          --health-cmd="pg_isready -U slotbook -d slotbook"
           --health-interval=5s --health-timeout=3s --health-retries=15
     env:
-      TEST_DATABASE_URL: postgresql://slotbook:slotbook_ci@localhost:5432/slotbook_test
-      DATABASE_URL: postgresql://slotbook:slotbook_ci@localhost:5432/slotbook_test
+      DATABASE_URL: postgresql://slotbook:slotbook_ci@127.0.0.1:5432/slotbook
+      TEST_DATABASE_URL: postgresql://slotbook:slotbook_ci@127.0.0.1:5432/slotbook_test
       DEMO_EMAIL: demo@slotbook.local
       DEMO_PASSWORD: DemoPass!2026
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: '22'}
-      - run: npm install --no-audit --no-fund
-      - run: npm run build
-      - run: npm test
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Create separate test database
+        env:
+          PGPASSWORD: slotbook_ci
+        run: psql -h 127.0.0.1 -p 5432 -U slotbook -d slotbook -c "CREATE DATABASE slotbook_test OWNER slotbook;"
+      - name: Build and typecheck
+        run: npm run build
+      - name: Run PostgreSQL and HTTP tests
+        run: npm test
