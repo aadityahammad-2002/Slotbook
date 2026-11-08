@@ -1,0 +1,41 @@
+{
+  "name": "slotbook-typescript",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run build:server && node dist/server/src/index.js",
+    "start:local": "node --env-file=.env dist/server/src/index.js",
+    "test:local": "npm run build:server && node --env-file=.env --test --test-concurrency=1 dist/tests/integration.test.js dist/tests/http_contract.test.js",
+    "test:concurrency:local": "npm run build:server && node --env-file=.env dist/scripts/concurrency.js",
+    "dev:web": "vite --host 0.0.0.0",
+    "build:server": "tsc -p tsconfig.server.json",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "build": "npm run build:server && npm run typecheck:web && vite build",
+    "start": "node dist/server/src/index.js",
+    "migrate": "npm run build:server && node dist/server/src/migrate.js",
+    "seed": "npm run build:server && node dist/server/src/seed.js",
+    "test": "npm run build:server && node --test --test-concurrency=1 dist/tests/integration.test.js dist/tests/http_contract.test.js",
+    "test:concurrency": "npm run build:server && node dist/scripts/concurrency.js",
+    "verify:local": "npm run check:env && npm run build && npm run test:local",
+    "check:env": "node --env-file=.env scripts/check-env.mjs"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.0",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.11",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.1.0"
+  }
+}
